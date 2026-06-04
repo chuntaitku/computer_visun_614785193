@@ -25,12 +25,10 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"[INFO] Using device: {device}")
 if device.type == 'cuda':
     print(f"[INFO] GPU Active: {torch.cuda.get_device_name(0)}")
-    # Optimize algorithm tuning for fixed input sizes (224x224) on Linux CUDA
     torch.backends.cudnn.benchmark = True
 
 # --- HYPERPARAMETERS ---
 BASE_DIR = "."
-# Linux is case-sensitive! Ensure your actual directory matches 'Images' exactly
 IMAGES_DIR = os.path.join(BASE_DIR, "Images") 
 TRAIN_MAT = os.path.join(BASE_DIR, "train_list.mat")
 TEST_MAT = os.path.join(BASE_DIR, "test_list.mat")
@@ -38,7 +36,7 @@ TEST_MAT = os.path.join(BASE_DIR, "test_list.mat")
 IMG_SIZE = (224, 224)
 BATCH_SIZE = 32
 EPOCHS = 30
-PATIENCE = 5  # For Early Stopping
+PATIENCE = 5  
 
 # =====================================================================
 # 1. DATASET DEFINITION & PIPELINES
@@ -49,7 +47,6 @@ class StanfordDogsDataset(Dataset):
         self.img_dir = img_dir
         self.transform = transform
         self.file_list = [str(f[0][0]) for f in mat_data['file_list']]
-        # Convert 1-indexed to 0-indexed labels
         self.labels = [int(l[0]) - 1 for l in mat_data['labels']]
 
     def __len__(self):
@@ -58,7 +55,6 @@ class StanfordDogsDataset(Dataset):
     def __getitem__(self, idx):
         img_path = os.path.join(self.img_dir, self.file_list[idx])
         
-        # Verify file existence to avoid random Linux crash mid-training
         if not os.path.exists(img_path):
             raise FileNotFoundError(f"Image not found: {img_path}. Check path case sensitivity.")
             
@@ -71,7 +67,6 @@ class StanfordDogsDataset(Dataset):
             
         return image, label
 
-# ImageNet normalization standards
 normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
 
 train_transform = transforms.Compose([
@@ -94,7 +89,6 @@ print("[INFO] Setting up PyTorch datasets...")
 train_dataset = StanfordDogsDataset(TRAIN_MAT, IMAGES_DIR, transform=train_transform)
 test_dataset = StanfordDogsDataset(TEST_MAT, IMAGES_DIR, transform=test_transform)
 
-# Optimized num_workers=4 for Linux multi-processing. pin_memory speeds up GPU transfers
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
 test_loader = DataLoader(test_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
 
@@ -102,38 +96,63 @@ NUM_CLASSES = len(np.unique(train_dataset.labels))
 print(f"[INFO] Total Classes: {NUM_CLASSES}")
 
 # =====================================================================
-# 2. MODEL BUILDING FUNCTION
+# 2. CUSTOM MODEL WRAPPERS (Preserves Grad-CAM Access paths)
 # =====================================================================
+class DogBreedEfficientNet(nn.Module):
+    def __init__(self, num_classes):
+        super(DogBreedEfficientNet, self).__init__()
+        self.backbone = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT)
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+        
+        num_ftrs = self.backbone.classifier[1].in_features
+        self.backbone.classifier = nn.Sequential(
+            nn.Dropout(0.3),
+            nn.Linear(num_ftrs, num_classes)
+        )
+
+    def forward(self, x):
+        return self.backbone(x)
+
+class DogBreedResNet(nn.Module):
+    def __init__(self, num_classes):
+        super(DogBreedResNet, self).__init__()
+        self.backbone = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+            
+        num_ftrs = self.backbone.fc.in_features
+        self.backbone.fc = nn.Sequential(
+            nn.Dropout(0.3),
+            nn.Linear(num_ftrs, num_classes)
+        )
+
+    def forward(self, x):
+        return self.backbone(x)
+
+class DogBreedMobileNet(nn.Module):
+    def __init__(self, num_classes):
+        super(DogBreedMobileNet, self).__init__()
+        self.backbone = models.mobilenet_v3_large(weights=models.MobileNet_V3_Large_Weights.DEFAULT)
+        for param in self.backbone.parameters():
+            param.requires_grad = False
+            
+        num_ftrs = self.backbone.classifier[3].in_features
+        self.backbone.classifier[3] = nn.Linear(num_ftrs, num_classes)
+
+    def forward(self, x):
+        return self.backbone(x)
+
 def get_model(model_name):
     if model_name == "ResNet50":
-        model = models.resnet50(weights=models.ResNet50_Weights.DEFAULT)
-        for param in model.parameters():
-            param.requires_grad = False
-        num_ftrs = model.fc.in_features
-        model.fc = nn.Sequential(
-            nn.Dropout(0.3),
-            nn.Linear(num_ftrs, NUM_CLASSES)
-        )
+        return DogBreedResNet(NUM_CLASSES).to(device)
     elif model_name == "EfficientNetB0":
-        model = models.efficientnet_b0(weights=models.EfficientNet_B0_Weights.DEFAULT)
-        for param in model.parameters():
-            param.requires_grad = False
-        num_ftrs = model.classifier[1].in_features
-        model.classifier = nn.Sequential(
-            nn.Dropout(0.3),
-            nn.Linear(num_ftrs, NUM_CLASSES)
-        )
+        return DogBreedEfficientNet(NUM_CLASSES).to(device)
     elif model_name == "MobileNetV3":
-        model = models.mobilenet_v3_large(weights=models.MobileNet_V3_Large_Weights.DEFAULT)
-        for param in model.parameters():
-            param.requires_grad = False
-        num_ftrs = model.classifier[3].in_features
-        model.classifier[3] = nn.Linear(num_ftrs, NUM_CLASSES)
-        
-    return model.to(device)
+        return DogBreedMobileNet(NUM_CLASSES).to(device)
 
 # =====================================================================
-# 3. TRAINING ENGINE LOOP (With Early Stopping)
+# 3. TRAINING ENGINE LOOP 
 # =====================================================================
 model_names = ["MobileNetV3", "ResNet50", "EfficientNetB0"]
 val_acc_histories = {}
@@ -152,7 +171,6 @@ for name in model_names:
     history = []
     
     for epoch in range(EPOCHS):
-        # --- Training Phase ---
         model.train()
         train_loss, train_correct = 0.0, 0
         for inputs, targets in train_loader:
@@ -171,7 +189,6 @@ for name in model_names:
         epoch_train_loss = train_loss / len(train_loader.dataset)
         epoch_train_acc = train_correct.double() / len(train_loader.dataset)
         
-        # --- Validation/Testing Phase ---
         model.eval()
         val_loss, val_correct = 0.0, 0
         with torch.no_grad():
@@ -192,7 +209,6 @@ for name in model_names:
         
         print(f"Epoch {epoch+1}/{EPOCHS} -> Train Loss: {epoch_train_loss:.4f} Acc: {epoch_train_acc:.4f} | Val Loss: {epoch_val_loss:.4f} Acc: {epoch_val_acc:.4f}")
         
-        # Checkpoint and Early Stopping Check
         if epoch_val_acc > best_val_acc:
             best_val_acc = epoch_val_acc
             torch.save(model.state_dict(), f"best_{name}.pth")
@@ -215,7 +231,7 @@ plt.savefig("pytorch_model_comparison.png")
 print("\n[INFO] Comparison chart saved as 'pytorch_model_comparison.png'")
 
 # =====================================================================
-# 4. EXPLAINABLE AI CONTRIBUTION (GRAD-CAM IN PYTORCH)
+# 4. EXPLAINABLE AI CONTRIBUTION (GRAD-CAM FIXED FOR LINUX)
 # =====================================================================
 print("\n" + "="*60)
 print("[PROPOSAL CONTRIBUTION] Generating PyTorch Grad-CAM...")
@@ -228,7 +244,6 @@ class GradCAM:
         self.gradients = None
         self.features = None
         
-        # Hook activations and gradients
         self.target_layer.register_forward_hook(self.save_features)
         self.target_layer.register_full_backward_hook(self.save_gradients)
         
@@ -247,7 +262,6 @@ class GradCAM:
         loss = output[0, class_idx]
         loss.backward()
         
-        # Calculate Grad-CAM heatmap
         gradients = self.gradients.cpu().data.numpy()[0]
         features = self.features.cpu().data.numpy()[0]
         weights = np.mean(gradients, axis=(1, 2))
@@ -267,7 +281,8 @@ try:
     eval_model.load_state_dict(torch.load("best_EfficientNetB0.pth", map_location=device))
     eval_model.eval()
     
-    target_layer_block = eval_model.features[-1]
+    # Correctly targets the internal functional layers of the model's backbone
+    target_layer_block = eval_model.backbone.features[-1]
     cam_extractor = GradCAM(eval_model, target_layer_block)
     
     sample_tensor, _ = test_dataset[15]

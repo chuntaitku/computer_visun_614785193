@@ -287,46 +287,54 @@ try:
     eval_model.load_state_dict(torch.load("best_EfficientNetB0.pth", map_location=device))
     eval_model.eval()
     
-    # =================================================================
-    # THE FIX: Unfreeze the model so Grad-CAM can calculate the heatmap
-    # =================================================================
+    # Unfreeze the model so Grad-CAM can calculate the heatmap gradients
     for param in eval_model.parameters():
         param.requires_grad = True
         
-    # Target the final convolutional feature extractor block of EfficientNet
     target_layer_block = eval_model.backbone.features[-1]
     cam_extractor = GradCAM(eval_model, target_layer_block)
     
-    sample_tensor, _ = test_dataset[15]
+    # Pick 5 random images from the test set
+    num_images = 5
+    random_indices = np.random.choice(len(test_dataset), num_images, replace=False)
     
-    # We must explicitly tell PyTorch this specific input needs gradient tracking too
-    input_tensor = sample_tensor.unsqueeze(0).to(device)
-    input_tensor.requires_grad_(True) 
+    # Create a tall figure (5 rows, 2 columns)
+    fig, axes = plt.subplots(num_images, 2, figsize=(10, 4 * num_images))
     
-    heatmap = cam_extractor.generate(input_tensor)
-    
-    inv_img = sample_tensor.permute(1, 2, 0).numpy()
-    inv_img = inv_img * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
-    inv_img = np.clip(inv_img, 0, 1)
-    
-    heatmap_colored = cv2.applyColorMap(np.uint8(255 * heatmap), cv2.COLORMAP_JET)
-    heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB) / 255.0
-    superimposed = heatmap_colored * 0.4 + inv_img
-    superimposed = np.clip(superimposed, 0, 1)
-    
-    fig, ax = plt.subplots(1, 2, figsize=(10, 5))
-    ax[0].imshow(inv_img)
-    ax[0].set_title("Original Dog Profile")
-    ax[0].axis("off")
-    ax[1].imshow(superimposed)
-    ax[1].set_title("PyTorch Grad-CAM Activation Focus")
-    ax[1].axis("off")
-    
+    for i, idx in enumerate(random_indices):
+        sample_tensor, _ = test_dataset[idx]
+        
+        # Tell PyTorch to track gradients for the input image
+        input_tensor = sample_tensor.unsqueeze(0).to(device)
+        input_tensor.requires_grad_(True) 
+        
+        heatmap = cam_extractor.generate(input_tensor)
+        
+        inv_img = sample_tensor.permute(1, 2, 0).numpy()
+        inv_img = inv_img * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
+        inv_img = np.clip(inv_img, 0, 1)
+        
+        heatmap_colored = cv2.applyColorMap(np.uint8(255 * heatmap), cv2.COLORMAP_JET)
+        heatmap_colored = cv2.cvtColor(heatmap_colored, cv2.COLOR_BGR2RGB) / 255.0
+        superimposed = heatmap_colored * 0.4 + inv_img
+        superimposed = np.clip(superimposed, 0, 1)
+        
+        # Plot Original
+        axes[i, 0].imshow(inv_img)
+        axes[i, 0].set_title(f"Original Dog (Test Index {idx})")
+        axes[i, 0].axis("off")
+        
+        # Plot Grad-CAM
+        axes[i, 1].imshow(superimposed)
+        axes[i, 1].set_title("Grad-CAM Focus")
+        axes[i, 1].axis("off")
+        
     plt.tight_layout()
-    plt.savefig("pytorch_gradcam_result.png")
-    print("[SUCCESS] PyTorch Grad-CAM analysis chart saved as 'pytorch_gradcam_result.png'")
+    plt.savefig("pytorch_gradcam_5_results.png")
+    print(f"[SUCCESS] Saved 5 Grad-CAM analysis charts to 'pytorch_gradcam_5_results.png'")
 
 except Exception as e:
     print(f"[WARNING] Could not extract Grad-CAM metrics directly: {str(e)}")
 
 print("\n[INFO] PyTorch script finished execution perfectly.")
+

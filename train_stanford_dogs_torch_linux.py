@@ -287,12 +287,21 @@ try:
     eval_model.load_state_dict(torch.load("best_EfficientNetB0.pth", map_location=device))
     eval_model.eval()
     
-    # Correctly targets the internal functional layers of the model's backbone
+    # =================================================================
+    # THE FIX: Unfreeze the model so Grad-CAM can calculate the heatmap
+    # =================================================================
+    for param in eval_model.parameters():
+        param.requires_grad = True
+        
+    # Target the final convolutional feature extractor block of EfficientNet
     target_layer_block = eval_model.backbone.features[-1]
     cam_extractor = GradCAM(eval_model, target_layer_block)
     
     sample_tensor, _ = test_dataset[15]
+    
+    # We must explicitly tell PyTorch this specific input needs gradient tracking too
     input_tensor = sample_tensor.unsqueeze(0).to(device)
+    input_tensor.requires_grad_(True) 
     
     heatmap = cam_extractor.generate(input_tensor)
     

@@ -244,14 +244,16 @@ class GradCAM:
         self.gradients = None
         self.features = None
         
+        # Only register the forward hook
         self.target_layer.register_forward_hook(self.save_features)
-        self.target_layer.register_full_backward_hook(self.save_gradients)
         
     def save_features(self, module, input, output):
         self.features = output
+        # Attach the gradient hook directly to the output tensor!
+        output.register_hook(self.save_gradients)
         
-    def save_gradients(self, module, grad_input, grad_output):
-        self.gradients = grad_output[0]
+    def save_gradients(self, grad):
+        self.gradients = grad
 
     def generate(self, input_tensor, class_idx=None):
         output = self.model(input_tensor)
@@ -262,6 +264,7 @@ class GradCAM:
         loss = output[0, class_idx]
         loss.backward()
         
+        # Calculate Grad-CAM heatmap
         gradients = self.gradients.cpu().data.numpy()[0]
         features = self.features.cpu().data.numpy()[0]
         weights = np.mean(gradients, axis=(1, 2))
@@ -273,7 +276,10 @@ class GradCAM:
         cam = np.maximum(cam, 0)
         cam = cv2.resize(cam, (224, 224))
         cam = cam - np.min(cam)
-        cam = cam / np.max(cam)
+        
+        # Safety check to avoid division by zero
+        if np.max(cam) != 0:
+            cam = cam / np.max(cam)
         return cam
 
 try:

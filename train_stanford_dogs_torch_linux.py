@@ -336,5 +336,120 @@ try:
 except Exception as e:
     print(f"[WARNING] Could not extract Grad-CAM metrics directly: {str(e)}")
 
+# =====================================================================
+# 5. FINAL EVALUATION: METRICS & PREDICTION VISUALIZATIONS
+# =====================================================================
+print("\n" + "="*60)
+print("[PROPOSAL ALIGNMENT] Running Comprehensive Evaluation...")
+print("="*60)
+
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+
+try:
+    # 1. Load the best performing model
+    print("[INFO] Reloading best saved ResNet50 checkpoint for evaluation...")
+    eval_model = get_model("ResNet50")
+    eval_model.load_state_dict(torch.load("best_ResNet50.pth", map_location=device))
+    eval_model.eval()
+    
+    all_preds = []
+    all_targets = []
+    top1_correct = 0
+    top5_correct = 0
+    total_samples = 0
+    
+    print("[INFO] Gathering predictions across the entire test dataset...")
+    with torch.no_grad():
+        for inputs, targets in test_loader:
+            inputs, targets = inputs.to(device), targets.to(device)
+            outputs = model(inputs)
+            
+            # Extract top probabilities
+            _, pred_top1 = torch.max(outputs, 1)
+            _, pred_top5 = torch.topk(outputs, 5, dim=1)
+            
+            # Append for metrics calculation
+            all_preds.extend(pred_top1.cpu().numpy())
+            all_targets.extend(targets.cpu().numpy())
+            
+            # Calculate top-1 and top-5 match counts
+            total_samples += targets.size(0)
+            top1_correct += torch.sum(pred_top1 == targets).item()
+            
+            for j in range(targets.size(0)):
+                if targets[j] in pred_top5[j]:
+                    top5_correct += 1
+
+    # Compute metric ratios
+    top1_acc = (top1_correct / total_samples) * 100
+    top5_acc = (top5_correct / total_samples) * 100
+    
+    print(f"\n{'-'*40}\n[RESULTS] FINAL METRICS\n{'-'*40}")
+    print(f"Top-1 Accuracy: {top1_acc:.2f}%")
+    print(f"Top-5 Accuracy: {top5_acc:.2f}%")
+    print(f"{'-'*40}")
+    
+    # 2. Generate and Save Confusion Matrix Plot
+    print("[INFO] Plotting confusion matrix...")
+    cm = confusion_matrix(all_targets, all_preds)
+    plt.figure(figsize=(12, 10))
+    # We use a heatmap without annotations because 120 classes would crowd numbers
+    sns.heatmap(cm, cmap="Blues", annot=False) 
+    plt.title("Stanford Dogs - 120 Breed Classification Confusion Matrix")
+    plt.xlabel("Predicted Label Indices")
+    plt.ylabel("True Label Indices")
+    plt.tight_layout()
+    plt.savefig("confusion_matrix.png")
+    print("[SUCCESS] Saved confusion matrix visualization to 'confusion_matrix.png'")
+    
+    # 3. Output Dataset Grid with Predicted Labels
+    print("\n[INFO] Creating grid visualization of test predictions...")
+    num_display = 6
+    random_test_indices = np.random.choice(len(test_dataset), num_display, replace=False)
+    
+    fig, axes = plt.subplots(2, 3, figsize=(15, 10))
+    axes = axes.flatten()
+    
+    # Optional helper: Load mat file data to extract the readable class names if desired.
+    # For speed and safety, we display the breed directory label extracted from paths.
+    for idx, test_idx in enumerate(random_test_indices):
+        sample_tensor, true_label = test_dataset[test_idx]
+        img_path = test_dataset.file_list[test_idx]
+        breed_real_name = img_path.split("/")[0].split("-", 1)[-1] # Clean string extract (e.g. "Chihuahua")
+        
+        # Predict on this single image tensor
+        input_tensor = sample_tensor.unsqueeze(0).to(device)
+        with torch.no_grad():
+            output = eval_model(input_tensor)
+            _, predicted_idx = torch.max(output, 1)
+            predicted_idx = predicted_idx.item()
+            
+        # Get predicted string name by looking up test dataset paths mapping matches
+        # Find any path entry that belongs to the predicted index label to decode string name
+        pred_sample_path = [test_dataset.file_list[i] for i, l in enumerate(test_dataset.labels) if l == predicted_idx][0]
+        breed_pred_name = pred_sample_path.split("/")[0].split("-", 1)[-1]
+        
+        # Recover image to true colors
+        inv_img = sample_tensor.permute(1, 2, 0).numpy()
+        inv_img = inv_img * np.array([0.229, 0.224, 0.225]) + np.array([0.485, 0.456, 0.406])
+        inv_img = np.clip(inv_img, 0, 1)
+        
+        # Configure plotting color format based on correctness
+        title_color = "green" if predicted_idx == true_label else "red"
+        
+        axes[idx].imshow(inv_img)
+        axes[idx].set_title(f"True: {breed_real_name}\nPred: {breed_pred_name}", color=title_color, fontsize=12)
+        axes[idx].axis("off")
+        
+    plt.tight_layout()
+    plt.savefig("model_predictions_grid.png")
+    print("[SUCCESS] Saved sample batch predictions grid to 'model_predictions_grid.png'")
+
+except Exception as e:
+    print(f"\n[WARNING] Critical evaluation processing error: {str(e)}")
+
+print("\n[INFO] Script processing finished.")
+
 print("\n[INFO] PyTorch script finished execution perfectly.")
 

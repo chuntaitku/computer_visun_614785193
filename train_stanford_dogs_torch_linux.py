@@ -12,7 +12,8 @@ import numpy as np
 import matplotlib
 matplotlib.use('Agg') # Saves plots to disk safely over SSH/Headless sessions
 import matplotlib.pyplot as plt
-
+from sklearn.metrics import confusion_matrix,classification_report, precision_recall_fscore_support
+import seaborn as sns
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -158,7 +159,7 @@ model_names = ["MobileNetV3", "ResNet50", "EfficientNetB0"]
 val_acc_histories = {}
 
 plt.figure(figsize=(10, 6))
-
+'''
 for name in model_names:
     print(f"\n{'='*50}\nTraining {name}\n{'='*50}")
     model = get_model(name)
@@ -229,7 +230,7 @@ plt.legend()
 plt.grid(True)
 plt.savefig("pytorch_model_comparison.png")
 print("\n[INFO] Comparison chart saved as 'pytorch_model_comparison.png'")
-
+'''
 # =====================================================================
 # 4. EXPLAINABLE AI CONTRIBUTION (GRAD-CAM FIXED FOR LINUX)
 # =====================================================================
@@ -343,8 +344,7 @@ print("\n" + "="*60)
 print("[PROPOSAL ALIGNMENT] Running Comprehensive Evaluation...")
 print("="*60)
 
-from sklearn.metrics import confusion_matrix
-import seaborn as sns
+
 
 try:
     # 1. Load the best performing model
@@ -450,6 +450,89 @@ except Exception as e:
     print(f"\n[WARNING] Critical evaluation processing error: {str(e)}")
 
 print("\n[INFO] Script processing finished.")
+# =====================================================================
+# EXTENDED EVALUATION: TOP-1, TOP-5, PRECISION, RECALL, F1-SCORE
+# =====================================================================
 
+
+print("\n" + "="*60)
+print("[INFO] Running Extended Evaluation with SOTA Metrics...")
+print("="*60)
+
+try:
+    # 1. Load the best performing model
+    print("[INFO] Reloading best saved ResNet50 checkpoint...")
+    eval_model = get_model("ResNet50") # Ensure get_model() is defined in your script
+    eval_model.load_state_dict(torch.load("best_ResNet50.pth", map_location=device))
+    eval_model.eval()
+    
+    all_preds = []
+    all_targets = []
+    top1_correct = 0
+    top5_correct = 0
+    total_samples = 0
+    
+    print("[INFO] Evaluating on the testing dataset. This may take a minute...")
+    with torch.no_grad():
+        for inputs, targets in test_loader:
+            inputs, targets = inputs.to(device), targets.to(device)
+            outputs = eval_model(inputs)
+            
+            # Extract top probabilities
+            _, pred_top1 = torch.max(outputs, 1)
+            _, pred_top5 = torch.topk(outputs, 5, dim=1)
+            
+            # Append for scikit-learn metrics
+            all_preds.extend(pred_top1.cpu().numpy())
+            all_targets.extend(targets.cpu().numpy())
+            
+            # Calculate top-1 and top-5
+            total_samples += targets.size(0)
+            top1_correct += torch.sum(pred_top1 == targets).item()
+            
+            for j in range(targets.size(0)):
+                if targets[j] in pred_top5[j]:
+                    top5_correct += 1
+
+    # Compute baseline metric ratios
+    top1_acc = (top1_correct / total_samples) * 100
+    top5_acc = (top5_correct / total_samples) * 100
+    
+    # Compute Precision, Recall, and F1 (Macro Average gives equal weight to all breeds)
+    macro_prec, macro_rec, macro_f1, _ = precision_recall_fscore_support(
+        all_targets, all_preds, average='macro', zero_division=0
+    )
+    
+    # Compute Weighted Average (Weights by number of true instances per breed)
+    weight_prec, weight_rec, weight_f1, _ = precision_recall_fscore_support(
+        all_targets, all_preds, average='weighted', zero_division=0
+    )
+
+    print(f"\n{'-'*40}\n[RESULTS] FINAL METRICS\n{'-'*40}")
+    print(f"Top-1 Accuracy:  {top1_acc:.2f}%")
+    print(f"Top-5 Accuracy:  {top5_acc:.2f}%")
+    print(f"{'-'*40}")
+    print(f"Macro Precision: {macro_prec * 100:.2f}%")
+    print(f"Macro Recall:    {macro_rec * 100:.2f}%")
+    print(f"Macro F1-Score:  {macro_f1 * 100:.2f}%")
+    print(f"{'-'*40}")
+    print(f"Weighted F1:     {weight_f1 * 100:.2f}%")
+    print(f"{'-'*40}")
+
+    # Generate the massive 120-class report and save to file
+    print("[INFO] Generating full 120-class report...")
+    full_report = classification_report(all_targets, all_preds, digits=4, zero_division=0)
+    
+    with open("full_classification_report.txt", "w") as f:
+        f.write("Stanford Dogs 120-Class Evaluation Report\n")
+        f.write("="*50 + "\n")
+        f.write(full_report)
+        
+    print("[SUCCESS] Full breakdown saved to 'full_classification_report.txt'")
+
+except Exception as e:
+    print(f"\n[WARNING] Critical evaluation processing error: {str(e)}")
+
+print("\n[INFO] Script processing finished.")
 print("\n[INFO] PyTorch script finished execution perfectly.")
 
